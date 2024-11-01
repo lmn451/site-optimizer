@@ -12,6 +12,13 @@ chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.set({ config: DEFAULT_CONFIG });
 });
 
+const nextRuleID = () =>
+  new Promise((resolve) => {
+    chrome.declarativeNetRequest.getSessionRules((rules) => {
+      resolve(rules.length + 1);
+    });
+  });
+
 // Early intervention
 chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
   if (details.frameId === 0) {
@@ -22,7 +29,7 @@ chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
       chrome.declarativeNetRequest.updateSessionRules({
         addRules: [
           {
-            id: 1,
+            id: await nextRuleID(),
             priority: 1,
             action: {
               type: "modifyHeaders",
