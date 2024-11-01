@@ -157,11 +157,140 @@ function optimizeScripts() {
   );
 }
 
-function fixOpacityAnimations() {
-  // Find elements with opacity: 0
+function shouldSkipElement(element) {
+  // Check element and its parents for modal/menu related attributes and classes
+  const skipSelectors = [
+    '[role="menu"]',
+    '[role="navigation"]',
+    '[role="dialog"]',
+    '[role="modal"]',
+    ".modal",
+    ".dropdown",
+    ".menu",
+    ".nav",
+    ".popup",
+    '[aria-haspopup="true"]',
+    "[aria-expanded]",
+    '[data-toggle="dropdown"]',
+    '[data-toggle="modal"]',
+  ];
+
+  // Check if element or any parent matches skip conditions
+  const hasSkipSelector = skipSelectors.some((selector) => {
+    return (
+      element.matches(selector) ||
+      element.closest(selector) ||
+      element.querySelector(selector)
+    );
+  });
+
+  // Check class names and text content for menu-related terms
+  const menuTerms = [
+    "menu",
+    "nav",
+    "dropdown",
+    "popup",
+    "modal",
+    "dialog",
+    "submenu",
+    "navbar",
+  ];
+  const hasMenuClass = menuTerms.some((term) => {
+    const classString = element.className.toLowerCase();
+    const idString = element.id.toLowerCase();
+    const textContent = element.textContent?.toLowerCase() || "";
+
+    return (
+      classString.includes(term) ||
+      idString.includes(term) ||
+      (term === "menu" && textContent.includes(term))
+    );
+  });
+
+  // Check for common menu-related data attributes
+  const hasMenuDataAttr = Array.from(element.attributes).some((attr) => {
+    const name = attr.name.toLowerCase();
+    return (
+      name.includes("menu") ||
+      name.includes("nav") ||
+      name.includes("dropdown") ||
+      name.startsWith("data-toggle")
+    );
+  });
+
+  return hasSkipSelector || hasMenuClass || hasMenuDataAttr;
+}
+
+function fixHiddenElements() {
   const elements = document.querySelectorAll("*");
   elements.forEach((element) => {
+    // Skip if element should be hidden
+    if (shouldSkipElement(element)) {
+      return;
+    }
+
     const style = window.getComputedStyle(element);
+
+    // Check for various hiding techniques
+    if (
+      style.display === "none" ||
+      style.visibility === "hidden" ||
+      style.opacity === "0" ||
+      element.hasAttribute("hidden") ||
+      element.classList.contains("hidden") ||
+      element.classList.contains("invisible")
+    ) {
+      // Only modify if it's not a modal/menu/dropdown
+      const hasAnimationClass = Array.from(element.classList).some(
+        (cls) =>
+          cls.includes("fade") ||
+          cls.includes("animate") ||
+          cls.includes("transition") ||
+          cls.includes("show") ||
+          cls.includes("reveal")
+      );
+
+      if (hasAnimationClass && !shouldSkipElement(element)) {
+        element.style.setProperty(
+          "display",
+          element.style.display === "none" ? "block" : element.style.display,
+          "important"
+        );
+        element.style.setProperty("visibility", "visible", "important");
+        element.style.setProperty("opacity", "1", "important");
+        element.removeAttribute("hidden");
+      }
+    }
+  });
+}
+
+function fixOpacityAnimations() {
+  const elements = document.querySelectorAll("*");
+  elements.forEach((element) => {
+    // Skip if element should be hidden
+    if (shouldSkipElement(element)) {
+      return;
+    }
+
+    const style = window.getComputedStyle(element);
+
+    // Check for transform animations that might hide content
+    if (
+      style.transform.includes("scale(0)") ||
+      style.transform.includes("translateY(-100%)") ||
+      style.transform.includes("translateX(-100%)")
+    ) {
+      if (!shouldSkipElement(element)) {
+        element.style.setProperty("transform", "none", "important");
+      }
+    }
+
+    // Check for clip-path animations
+    if (style.clipPath === "inset(100%)" || style.clipPath === "circle(0%)") {
+      if (!shouldSkipElement(element)) {
+        element.style.setProperty("clip-path", "none", "important");
+      }
+    }
 
     // Check if element has opacity: 0 and animation/transition
     if (
@@ -172,11 +301,12 @@ function fixOpacityAnimations() {
         element.classList.toString().includes("animate") ||
         element.classList.toString().includes("fade"))
     ) {
-      // Force opacity to 1
-      element.style.setProperty("opacity", "1", "important");
-      element.style.setProperty("visibility", "visible", "important");
-      element.style.removeProperty("animation");
-      element.style.removeProperty("transition");
+      if (!shouldSkipElement(element)) {
+        element.style.setProperty("opacity", "1", "important");
+        element.style.setProperty("visibility", "visible", "important");
+        element.style.removeProperty("animation");
+        element.style.removeProperty("transition");
+      }
     }
   });
 }
@@ -187,11 +317,19 @@ function optimizePage() {
       try {
         let hasNewImages = false;
         let hasNewElements = false;
+        let hasClassChanges = false;
 
         mutations.forEach((mutation) => {
+          if (
+            mutation.type === "attributes" &&
+            (mutation.attributeName === "class" ||
+              mutation.attributeName === "style")
+          ) {
+            hasClassChanges = true;
+          }
+
           mutation.addedNodes.forEach((node) => {
             if (node.nodeType === 1) {
-              // Element node
               hasNewElements = true;
               if (
                 node.tagName === "IMG" ||
@@ -207,8 +345,9 @@ function optimizePage() {
         if (hasNewImages) {
           optimizeImages();
         }
-        if (hasNewElements) {
+        if (hasNewElements || hasClassChanges) {
           fixOpacityAnimations();
+          fixHiddenElements();
         }
       } catch (error) {
         // Silent fail for mutation processing
@@ -233,6 +372,7 @@ function optimizePage() {
           optimizeResourceHints();
           optimizeViewportRendering();
           fixOpacityAnimations();
+          fixHiddenElements();
         } catch (error) {
           // Silent fail for initial optimizations
         }
