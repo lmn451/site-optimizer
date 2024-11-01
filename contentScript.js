@@ -1,89 +1,134 @@
 function optimizeImages() {
-  const images = document.querySelectorAll("img");
+  const unoptimizedImages = document.querySelectorAll(
+    "img:not([data-optimized])"
+  );
+  if (!unoptimizedImages.length) return;
 
-  images.forEach((img) => {
-    const dataSrc =
+  // Create worker using Blob URL
+  const workerCode = `
+    self.onmessage = function(e) {
+      const { images, chunkSize } = e.data;
+
+      // Process images data in chunks
+      for (let i = 0; i < images.length; i += chunkSize) {
+        const chunk = images.slice(i, i + chunkSize);
+        const optimizedChunk = chunk.map(img => ({
+          ...img,
+          shouldOptimize: shouldOptimizeImage(img),
+          optimizationData: generateOptimizationData(img)
+        }));
+
+        self.postMessage({
+          type: 'CHUNK_PROCESSED',
+          chunk: optimizedChunk,
+          isLastChunk: i + chunkSize >= images.length
+        });
+      }
+    };
+
+    function shouldOptimizeImage(img) {
+      const { src, dataSrc, isOptimized, hasLazyLoad } = img;
+      return !isOptimized &&
+             !hasLazyLoad &&
+             (dataSrc || src)?.includes('http') &&
+             !(dataSrc || src)?.endsWith('.svg');
+    }
+
+    function generateOptimizationData(img) {
+      const { src, dataSrc } = img;
+      const finalSrc = dataSrc || src;
+
+      return {
+        src: finalSrc,
+        srcset: \`\${finalSrc} 1x, \${finalSrc} 2x\`,
+        sizes: "(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw",
+        loading: "lazy",
+        decoding: "async"
+      };
+    }
+  `;
+
+  const blob = new Blob([workerCode], { type: "text/javascript" });
+  const worker = new Worker(URL.createObjectURL(blob));
+
+  // Prepare image data for worker
+  const imageData = Array.from(unoptimizedImages).map((img) => ({
+    src: img.src,
+    dataSrc:
       img.getAttribute("data-lazy-src") ||
       img.getAttribute("data-src") ||
-      img.getAttribute("data-original");
-    const currentSrc = img.src;
-    const loadStatus = img.getAttribute("data-ll-status");
+      img.getAttribute("data-original"),
+    isOptimized: img.hasAttribute("data-optimized"),
+    hasLazyLoad: img.classList.contains("lazyloaded"),
+  }));
 
-    if (img.hasAttribute("data-optimized")) {
-      return;
-    }
+  // Handle worker messages
+  worker.onmessage = function (e) {
+    const { type, chunk, isLastChunk } = e.data;
 
-    if (loadStatus === "loaded" || img.classList.contains("lazyloaded")) {
-      img.setAttribute("data-optimized", "true");
-      return;
-    }
+    if (type === "CHUNK_PROCESSED") {
+      requestIdleCallback(
+        () => {
+          applyOptimizations(chunk, unoptimizedImages);
 
-    if (
-      currentSrc.includes("data:image/svg+xml") ||
-      currentSrc.endsWith(".svg")
-    ) {
-      if (dataSrc && !dataSrc.endsWith(".svg")) {
-        if (!img.classList.contains("lazyloaded")) {
-          const originalSrc = img.src;
-          img.src = dataSrc;
-
-          img.onerror = () => {
-            img.src = originalSrc;
-          };
-        }
-      }
-      img.setAttribute("data-optimized", "true");
-      return;
-    }
-
-    const src = dataSrc || currentSrc;
-
-    if (src && src.includes("http") && !src.endsWith(".svg")) {
-      if (!img.loading) {
-        img.loading = "lazy";
-        img.decoding = "async";
-      }
-
-      if (!img.hasAttribute("data-error-handler")) {
-        img.onerror = () => {
-          if (dataSrc && img.src !== dataSrc) {
-            img.src = dataSrc;
-          } else if (img.srcset) {
-            const smallestSrc = img.srcset.split(",")[0].split(" ")[0];
-            if (!smallestSrc.endsWith(".svg")) {
-              img.src = smallestSrc;
-            }
+          if (isLastChunk) {
+            worker.terminate();
+            URL.revokeObjectURL(worker.objectURL); // Clean up the Blob URL
           }
-        };
-        img.setAttribute("data-error-handler", "true");
-      }
-
-      if (
-        !img.classList.contains("lazyloaded") &&
-        !img.hasAttribute("data-original-src")
-      ) {
-        img.setAttribute("data-original-src", src);
-
-        if (!img.srcset) {
-          img.srcset = `${src} 1x, ${src} 2x`;
-          img.sizes =
-            "(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw";
-        }
-
-        if (isInViewport(img)) {
-          img.fetchPriority = "high";
-        } else {
-          img.fetchPriority = "low";
-        }
-      }
-
-      if (img.style.display === "none") {
-        img.style.removeProperty("display");
-      }
-
-      img.setAttribute("data-optimized", "true");
+        },
+        { timeout: 1000 }
+      );
     }
+  };
+
+  // Start worker
+  worker.postMessage({
+    images: imageData,
+    chunkSize: 10,
   });
+}
+
+function applyOptimizations(optimizedChunk, domImages) {
+  optimizedChunk.forEach((optimizedData, index) => {
+    if (!optimizedData.shouldOptimize) return;
+
+    const img = domImages[index];
+    const { src, srcset, sizes, loading, decoding } =
+      optimizedData.optimizationData;
+
+    // Apply optimizations
+    if (!img.loading) {
+      img.loading = loading;
+      img.decoding = decoding;
+    }
+
+    if (!img.srcset) {
+      img.srcset = srcset;
+      img.sizes = sizes;
+    }
+
+    // Set fetch priority
+    img.fetchPriority = isInViewport(img) ? "high" : "low";
+
+    // Ensure visibility
+    if (img.style.display === "none") {
+      img.style.removeProperty("display");
+    }
+
+    img.setAttribute("data-optimized", "true");
+  });
+}
+
+function handleSVGImage(img, dataSrc) {
+  if (
+    dataSrc &&
+    !dataSrc.endsWith(".svg") &&
+    !img.classList.contains("lazyloaded")
+  ) {
+    const originalSrc = img.src;
+    img.src = dataSrc;
+    img.onerror = () => (img.src = originalSrc);
+  }
 }
 
 function optimizeScripts() {
@@ -95,27 +140,44 @@ function optimizeScripts() {
   });
 }
 function optimizePage() {
-  const domObserver = new MutationObserver((mutations) => {
+  // Use a single mutation observer for all changes
+  const observer = new MutationObserver((mutations) => {
+    let hasNewImages = false;
+
     mutations.forEach((mutation) => {
       mutation.addedNodes.forEach((node) => {
-        if (node.tagName === "IMG") {
-          optimizeImages();
-        } else if (node.querySelectorAll) {
-          const imgs = node.querySelectorAll("img");
-          if (imgs.length > 0) {
-            optimizeImages();
-          }
+        if (
+          node.tagName === "IMG" ||
+          (node.querySelectorAll && node.querySelectorAll("img").length > 0)
+        ) {
+          hasNewImages = true;
         }
       });
     });
+
+    // Only run optimizeImages once per batch of mutations
+    if (hasNewImages) {
+      optimizeImages();
+    }
   });
 
-  domObserver.observe(document.body, { childList: true, subtree: true });
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: false,
+    characterData: false,
+  });
 
-  optimizeImages();
-  optimizeScripts();
-  optimizeResourceHints();
-  optimizeViewportRendering();
+  // Initial optimizations
+  requestIdleCallback(
+    () => {
+      optimizeImages();
+      optimizeScripts();
+      optimizeResourceHints();
+      optimizeViewportRendering();
+    },
+    { timeout: 2000 }
+  );
 }
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -158,60 +220,53 @@ function showToast(message) {
 function optimizeResourceHints() {
   const processedDomains = new Set();
   const domains = new Set();
+  const fragment = document.createDocumentFragment();
 
-  document.querySelectorAll('img[src^="http"]').forEach((img) => {
+  // Collect domains
+  const resources = [
+    ...document.querySelectorAll(
+      'img[src^="http"], script[src^="http"], link[rel="stylesheet"][href^="http"]'
+    ),
+  ];
+
+  resources.forEach((element) => {
     try {
-      const domain = new URL(img.src).origin;
+      const url = element.src || element.href;
+      const domain = new URL(url).origin;
       domains.add(domain);
-    } catch (e) {}
+    } catch {}
   });
 
-  document.querySelectorAll('script[src^="http"]').forEach((script) => {
-    try {
-      const domain = new URL(script.src).origin;
-      domains.add(domain);
-    } catch (e) {}
-  });
-
-  document.querySelectorAll('link[rel="stylesheet"]').forEach((link) => {
-    try {
-      const domain = new URL(link.href).origin;
-      domains.add(domain);
-    } catch (e) {}
-  });
-
+  // Create hints in a batch
   domains.forEach((domain) => {
     if (!processedDomains.has(domain) && domain !== window.location.origin) {
-      const hint = document.createElement("link");
-      hint.rel = "preconnect";
-      hint.href = domain;
-      hint.crossOrigin = "anonymous";
-      document.head.appendChild(hint);
-
-      const dnsPrefetch = document.createElement("link");
-      dnsPrefetch.rel = "dns-prefetch";
-      dnsPrefetch.href = domain;
-      document.head.appendChild(dnsPrefetch);
-
+      const [preconnect, dnsPrefetch] = createResourceHints(domain);
+      fragment.appendChild(preconnect);
+      fragment.appendChild(dnsPrefetch);
       processedDomains.add(domain);
     }
   });
 
-  document.querySelectorAll('a[href^="/"], a[href^="http"]').forEach((link) => {
-    try {
-      const url = new URL(link.href, window.location.origin);
-      if (
-        url.origin === window.location.origin &&
-        !link.href.includes("#") &&
-        isInViewport(link)
-      ) {
-        const prefetch = document.createElement("link");
-        prefetch.rel = "prefetch";
-        prefetch.href = url.href;
-        document.head.appendChild(prefetch);
-      }
-    } catch (e) {}
-  });
+  // Append all hints at once
+  requestIdleCallback(
+    () => {
+      document.head.appendChild(fragment);
+    },
+    { timeout: 1000 }
+  );
+}
+
+function createResourceHints(domain) {
+  const preconnect = document.createElement("link");
+  preconnect.rel = "preconnect";
+  preconnect.href = domain;
+  preconnect.crossOrigin = "anonymous";
+
+  const dnsPrefetch = document.createElement("link");
+  dnsPrefetch.rel = "dns-prefetch";
+  dnsPrefetch.href = domain;
+
+  return [preconnect, dnsPrefetch];
 }
 
 function isInViewport(element) {
