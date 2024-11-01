@@ -28,10 +28,11 @@ function optimizeImages() {
 
     function shouldOptimizeImage(img) {
       const { src, dataSrc, isOptimized, hasLazyLoad } = img;
-      return !isOptimized &&
-             !hasLazyLoad &&
-             (dataSrc || src)?.includes('http') &&
-             !(dataSrc || src)?.endsWith('.svg');
+      // Don't optimize if already handled by site's lazy loading
+      if (hasLazyLoad || isOptimized) return false;
+
+      const finalSrc = dataSrc || src;
+      return finalSrc?.includes('http') && !finalSrc?.endsWith('.svg');
     }
 
     function generateOptimizationData(img) {
@@ -40,7 +41,8 @@ function optimizeImages() {
 
       return {
         src: finalSrc,
-        srcset: \`\${finalSrc} 1x, \${finalSrc} 2x\`,
+        // Only set srcset if we have a valid source
+        srcset: finalSrc?.includes('http') ? \`\${finalSrc} 1x, \${finalSrc} 2x\` : null,
         sizes: "(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw",
         loading: "lazy",
         decoding: "async"
@@ -59,7 +61,9 @@ function optimizeImages() {
       img.getAttribute("data-src") ||
       img.getAttribute("data-original"),
     isOptimized: img.hasAttribute("data-optimized"),
-    hasLazyLoad: img.classList.contains("lazyloaded"),
+    hasLazyLoad:
+      img.classList.contains("lazyloaded") ||
+      img.hasAttribute("data-ll-status"),
   }));
 
   worker.onmessage = function (e) {
@@ -95,22 +99,26 @@ function applyOptimizations(optimizedChunk, domImages) {
     const { src, srcset, sizes, loading, decoding } =
       optimizedData.optimizationData;
 
+    // Don't modify images that are already loaded
+    if (img.complete && img.naturalWidth > 0) return;
+
     // Apply optimizations
     if (!img.loading) {
       img.loading = loading;
       img.decoding = decoding;
     }
 
-    if (!img.srcset) {
+    // Only set srcset if we have one and the image isn't already handled
+    if (srcset && !img.srcset && !img.hasAttribute("data-ll-status")) {
       img.srcset = srcset;
       img.sizes = sizes;
     }
 
-    // Set fetch priority
+    // Set fetch priority based on viewport visibility
     img.fetchPriority = isInViewport(img) ? "high" : "low";
 
-    // Ensure visibility
-    if (img.style.display === "none") {
+    // Don't hide images that are already visible
+    if (img.style.display === "none" && !img.hasAttribute("data-ll-status")) {
       img.style.removeProperty("display");
     }
 
