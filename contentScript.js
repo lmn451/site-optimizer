@@ -157,24 +157,58 @@ function optimizeScripts() {
   );
 }
 
+function fixOpacityAnimations() {
+  // Find elements with opacity: 0
+  const elements = document.querySelectorAll("*");
+  elements.forEach((element) => {
+    const style = window.getComputedStyle(element);
+
+    // Check if element has opacity: 0 and animation/transition
+    if (
+      style.opacity === "0" &&
+      (style.animation ||
+        style.transition ||
+        style.animationName ||
+        element.classList.toString().includes("animate") ||
+        element.classList.toString().includes("fade"))
+    ) {
+      // Force opacity to 1
+      element.style.setProperty("opacity", "1", "important");
+      element.style.setProperty("visibility", "visible", "important");
+      element.style.removeProperty("animation");
+      element.style.removeProperty("transition");
+    }
+  });
+}
+
 function optimizePage() {
   try {
     const observer = new MutationObserver((mutations) => {
       try {
         let hasNewImages = false;
+        let hasNewElements = false;
+
         mutations.forEach((mutation) => {
           mutation.addedNodes.forEach((node) => {
-            if (
-              node.tagName === "IMG" ||
-              (node.querySelectorAll && node.querySelectorAll("img").length > 0)
-            ) {
-              hasNewImages = true;
+            if (node.nodeType === 1) {
+              // Element node
+              hasNewElements = true;
+              if (
+                node.tagName === "IMG" ||
+                (node.querySelectorAll &&
+                  node.querySelectorAll("img").length > 0)
+              ) {
+                hasNewImages = true;
+              }
             }
           });
         });
 
         if (hasNewImages) {
           optimizeImages();
+        }
+        if (hasNewElements) {
+          fixOpacityAnimations();
         }
       } catch (error) {
         // Silent fail for mutation processing
@@ -185,7 +219,8 @@ function optimizePage() {
     observer.observe(document.body, {
       childList: true,
       subtree: true,
-      attributes: false,
+      attributes: true,
+      attributeFilter: ["class", "style"],
       characterData: false,
     });
 
@@ -197,6 +232,7 @@ function optimizePage() {
           optimizeScripts();
           optimizeResourceHints();
           optimizeViewportRendering();
+          fixOpacityAnimations();
         } catch (error) {
           // Silent fail for initial optimizations
         }

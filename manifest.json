@@ -8,7 +8,9 @@
     "declarativeNetRequest",
     "storage",
     "scripting",
-    "webNavigation"
+    "webNavigation",
+    "activeTab",
+    "tabs"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {
@@ -21,7 +23,8 @@
     {
       "matches": ["<all_urls>"],
       "js": ["contentScript.js"],
-      "run_at": "document_start"
+      "run_at": "document_start",
+      "all_frames": true
     }
   ],
   "declarative_net_request": {
