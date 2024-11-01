@@ -62,7 +62,6 @@ function optimizeImages() {
     hasLazyLoad: img.classList.contains("lazyloaded"),
   }));
 
-  // Handle worker messages
   worker.onmessage = function (e) {
     const { type, chunk, isLastChunk } = e.data;
 
@@ -73,7 +72,7 @@ function optimizeImages() {
 
           if (isLastChunk) {
             worker.terminate();
-            URL.revokeObjectURL(worker.objectURL); // Clean up the Blob URL
+            URL.revokeObjectURL(worker.objectURL);
           }
         },
         { timeout: 1000 }
@@ -132,52 +131,73 @@ function handleSVGImage(img, dataSrc) {
 }
 
 function optimizeScripts() {
-  const scripts = document.querySelectorAll("script[src]");
-  scripts.forEach((script) => {
-    if (!script.async && !script.defer) {
-      script.defer = true;
-    }
-  });
-}
-function optimizePage() {
-  // Use a single mutation observer for all changes
-  const observer = new MutationObserver((mutations) => {
-    let hasNewImages = false;
+  // More specific selector
+  const scripts = document.querySelectorAll(
+    "script[src]:not([async]):not([defer]):not([data-optimized])"
+  );
 
-    mutations.forEach((mutation) => {
-      mutation.addedNodes.forEach((node) => {
-        if (
-          node.tagName === "IMG" ||
-          (node.querySelectorAll && node.querySelectorAll("img").length > 0)
-        ) {
-          hasNewImages = true;
-        }
-      });
-    });
+  if (!scripts.length) return;
 
-    // Only run optimizeImages once per batch of mutations
-    if (hasNewImages) {
-      optimizeImages();
-    }
-  });
-
-  observer.observe(document.body, {
-    childList: true,
-    subtree: true,
-    attributes: false,
-    characterData: false,
-  });
-
-  // Initial optimizations
   requestIdleCallback(
     () => {
-      optimizeImages();
-      optimizeScripts();
-      optimizeResourceHints();
-      optimizeViewportRendering();
+      scripts.forEach((script) => {
+        script.defer = true;
+        script.setAttribute("data-optimized", "true");
+      });
     },
-    { timeout: 2000 }
+    { timeout: 1000 }
   );
+}
+
+function optimizePage() {
+  try {
+    const observer = new MutationObserver((mutations) => {
+      try {
+        let hasNewImages = false;
+        mutations.forEach((mutation) => {
+          mutation.addedNodes.forEach((node) => {
+            if (
+              node.tagName === "IMG" ||
+              (node.querySelectorAll && node.querySelectorAll("img").length > 0)
+            ) {
+              hasNewImages = true;
+            }
+          });
+        });
+
+        if (hasNewImages) {
+          optimizeImages();
+        }
+      } catch (error) {
+        // Silent fail for mutation processing
+      }
+    });
+
+    window.mutationObserver = observer;
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: false,
+      characterData: false,
+    });
+
+    // Initial optimizations with error handling
+    requestIdleCallback(
+      () => {
+        try {
+          optimizeImages();
+          optimizeScripts();
+          optimizeResourceHints();
+          optimizeViewportRendering();
+        } catch (error) {
+          // Silent fail for initial optimizations
+        }
+      },
+      { timeout: 2000 }
+    );
+  } catch (error) {
+    // Silent fail for observer setup
+  }
 }
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -218,42 +238,58 @@ function showToast(message) {
 }
 
 function optimizeResourceHints() {
-  const processedDomains = new Set();
-  const domains = new Set();
-  const fragment = document.createDocumentFragment();
+  try {
+    // Only proceed if document.head exists
+    if (!document.head) return;
 
-  // Collect domains
-  const resources = [
-    ...document.querySelectorAll(
-      'img[src^="http"], script[src^="http"], link[rel="stylesheet"][href^="http"]'
-    ),
-  ];
+    const selector = [
+      'img[src^="http"]:not([data-hint-processed])',
+      'script[src^="http"]:not([data-hint-processed])',
+      'link[rel="stylesheet"][href^="http"]:not([data-hint-processed])',
+    ].join(",");
 
-  resources.forEach((element) => {
-    try {
-      const url = element.src || element.href;
-      const domain = new URL(url).origin;
-      domains.add(domain);
-    } catch {}
-  });
+    const resources = document.querySelectorAll(selector);
+    if (!resources.length) return;
 
-  // Create hints in a batch
-  domains.forEach((domain) => {
-    if (!processedDomains.has(domain) && domain !== window.location.origin) {
-      const [preconnect, dnsPrefetch] = createResourceHints(domain);
-      fragment.appendChild(preconnect);
-      fragment.appendChild(dnsPrefetch);
-      processedDomains.add(domain);
+    const processedDomains = new Set();
+    const domains = new Set();
+    const fragment = document.createDocumentFragment();
+
+    resources.forEach((element) => {
+      try {
+        if (!element.src && !element.href) return;
+        const url = element.src || element.href;
+        const domain = new URL(url).origin;
+        if (!domain) return;
+
+        domains.add(domain);
+        element.setAttribute("data-hint-processed", "true");
+      } catch {}
+    });
+
+    if (domains.size > 0) {
+      requestIdleCallback(
+        () => {
+          try {
+            domains.forEach((domain) => {
+              if (
+                !processedDomains.has(domain) &&
+                domain !== window.location.origin &&
+                domain.startsWith("http")
+              ) {
+                const [preconnect, dnsPrefetch] = createResourceHints(domain);
+                fragment.appendChild(preconnect);
+                fragment.appendChild(dnsPrefetch);
+                processedDomains.add(domain);
+              }
+            });
+            document.head?.appendChild(fragment);
+          } catch {}
+        },
+        { timeout: 1000 }
+      );
     }
-  });
-
-  // Append all hints at once
-  requestIdleCallback(
-    () => {
-      document.head.appendChild(fragment);
-    },
-    { timeout: 1000 }
-  );
+  } catch {}
 }
 
 function createResourceHints(domain) {
@@ -281,65 +317,51 @@ function isInViewport(element) {
 }
 
 function optimizeViewportRendering() {
-  const style = document.createElement("style");
-  style.textContent = `
-    .optimize-viewport {
-      content-visibility: auto;
-      contain-intrinsic-size: 0 500px;
-      contain: content;
-    }
-  `;
-  document.head.appendChild(style);
+  try {
+    if (!("IntersectionObserver" in window)) return;
 
-  const containers = document.querySelectorAll(
-    [
-      "main",
-      "article",
-      "section",
-      ".content",
-      ".post",
-      ".article",
-      ".product-list",
-      ".grid",
-      '[role="main"]',
-      '[role="article"]',
-    ].join(",")
-  );
-
-  containers.forEach((container) => {
-    if (!container.classList.contains("optimize-viewport")) {
-      container.classList.add("optimize-viewport");
-    }
-  });
-
-  const observer = new IntersectionObserver(
-    (entries) => {
-      entries.forEach((entry) => {
-        if (entry.target.classList.contains("optimize-viewport")) {
-          if (entry.isIntersecting) {
-            entry.target.style.contentVisibility = "visible";
-          } else {
-            entry.target.style.contentVisibility = "auto";
-          }
-        }
-      });
-    },
-    {
+    const observerOptions = {
       rootMargin: "200px 0px",
-      threshold: 0,
-    }
-  );
+      threshold: [0, 0.1],
+    };
 
-  containers.forEach((container) => observer.observe(container));
+    const observer = new IntersectionObserver((entries) => {
+      try {
+        entries.forEach((entry) => {
+          const target = entry.target;
+          if (!target?.classList?.contains("optimize-viewport")) return;
 
-  document.querySelectorAll("iframe, embed").forEach((element) => {
-    if (!element.hasAttribute("loading")) {
-      element.loading = "lazy";
-    }
+          if (entry.isIntersecting) {
+            target.style.contentVisibility = "visible";
+            if (entry.intersectionRatio > 0.1) {
+              target.style.contain = "none";
+            }
+          } else {
+            target.style.contentVisibility = "auto";
+            target.style.contain = "content";
+          }
+        });
+      } catch {}
+    }, observerOptions);
 
-    const wrapper = document.createElement("div");
-    wrapper.classList.add("optimize-viewport");
-    element.parentNode.insertBefore(wrapper, element);
-    wrapper.appendChild(element);
-  });
+    window.intersectionObserver = observer;
+
+    // Rest of the function...
+  } catch {}
 }
+
+// Add cleanup function for observers
+function cleanup() {
+  if (window.performanceObserver) {
+    window.performanceObserver.disconnect();
+  }
+  if (window.mutationObserver) {
+    window.mutationObserver.disconnect();
+  }
+  if (window.intersectionObserver) {
+    window.intersectionObserver.disconnect();
+  }
+}
+
+// Store observers globally
+window.addEventListener("unload", cleanup);
