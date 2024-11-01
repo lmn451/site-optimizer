@@ -1,8 +1,6 @@
 document.addEventListener("DOMContentLoaded", async () => {
-  // Load settings
   const { config } = await chrome.storage.local.get("config");
 
-  // Create settings UI
   const settings = Object.entries(config)
     .map(
       ([key, value]) => `
@@ -19,7 +17,6 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   document.getElementById("settings").innerHTML = settings;
 
-  // Handle settings changes
   document.querySelectorAll('input[type="checkbox"]').forEach((input) => {
     input.addEventListener("change", async (e) => {
       const { config } = await chrome.storage.local.get("config");
