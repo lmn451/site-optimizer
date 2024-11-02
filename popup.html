@@ -4,19 +4,76 @@
     <style>
       body {
         width: 300px;
-        padding: 10px;
+        padding: 16px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          Oxygen, Ubuntu, Cantarell, sans-serif;
       }
+
+      h2 {
+        margin: 0 0 16px 0;
+        color: #1a73e8;
+        font-size: 18px;
+      }
+
+      .settings-container {
+        background: #fff;
+        border-radius: 8px;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+        padding: 16px;
+      }
+
+      .setting {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 0;
+        border-bottom: 1px solid #eee;
+      }
+
+      .setting:last-child {
+        border-bottom: none;
+      }
+
+      .setting-label {
+        font-size: 14px;
+        color: #333;
+      }
+
+      .setting-description {
+        font-size: 12px;
+        color: #666;
+        margin-top: 4px;
+      }
+
+      .master-toggle {
+        background: #f8f9fa;
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 16px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border: 1px solid #dadce0;
+      }
+
+      .master-toggle .setting-label {
+        font-weight: 500;
+        color: #202124;
+      }
+
       .switch {
         position: relative;
         display: inline-block;
         width: 40px;
         height: 24px;
       }
+
       .switch input {
         opacity: 0;
         width: 0;
         height: 0;
       }
+
       .slider {
         position: absolute;
         cursor: pointer;
@@ -25,9 +82,10 @@
         right: 0;
         bottom: 0;
         background-color: #ccc;
-        transition: 0.4s;
+        transition: 0.3s;
         border-radius: 24px;
       }
+
       .slider:before {
         position: absolute;
         content: "";
@@ -36,37 +94,38 @@
         left: 4px;
         bottom: 4px;
         background-color: white;
-        transition: 0.4s;
+        transition: 0.3s;
         border-radius: 50%;
       }
+
       input:checked + .slider {
-        background-color: #2196f3;
+        background-color: #1a73e8;
       }
+
       input:checked + .slider:before {
         transform: translateX(16px);
       }
-      .setting {
-        display: flex;
-        align-items: center;
-        margin: 10px 0;
-      }
-      .setting span {
-        margin-left: 10px;
-      }
-      .debug-setting {
-        margin-top: 20px;
-        padding-top: 20px;
-        border-top: 1px solid #ccc;
+
+      .disabled {
+        opacity: 0.5;
+        pointer-events: none;
       }
     </style>
   </head>
   <body>
     <h2>Performance Optimizer</h2>
-    <div id="settings">
-      <!-- Settings will be inserted here -->
+    <div class="master-toggle">
+      <div>
+        <div class="setting-label">Enable Extension</div>
+        <div class="setting-description">Toggle all optimizations</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="masterToggle" />
+        <span class="slider"></span>
+      </label>
     </div>
-    <div id="stats">
-      <!-- Performance stats will be shown here -->
+    <div id="settings" class="settings-container">
+      <!-- Settings will be inserted here -->
     </div>
     <script src="popup.js"></script>
   </body>

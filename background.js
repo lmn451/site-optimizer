@@ -7,9 +7,20 @@ const DEFAULT_CONFIG = {
   preload: true,
 };
 
-// Initialize settings
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.local.set({ config: DEFAULT_CONFIG });
+// Initialize settings on installation
+chrome.runtime.onInstalled.addListener(async () => {
+  await chrome.storage.local.set({
+    enabled: true,
+    config: DEFAULT_CONFIG,
+  });
+});
+
+// Handle extension updates
+chrome.runtime.onStartup.addListener(async () => {
+  const { enabled } = await chrome.storage.local.get("enabled");
+  if (enabled === undefined) {
+    await chrome.storage.local.set({ enabled: true });
+  }
 });
 
 const nextRuleID = () =>

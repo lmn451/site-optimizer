@@ -1,3 +1,25 @@
+let isExtensionEnabled = true;
+
+// Initialize extension state
+chrome.storage.local.get("enabled", ({ enabled = true }) => {
+  isExtensionEnabled = enabled;
+  if (isExtensionEnabled) {
+    optimizePage();
+  }
+});
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === "EXTENSION_ENABLED_CHANGED") {
+    isExtensionEnabled = message.enabled;
+    if (!isExtensionEnabled) {
+      cleanup();
+    } else {
+      optimizePage();
+    }
+    sendResponse({ success: true }); // Acknowledge receipt
+  }
+});
+
 function optimizeImages() {
   const unoptimizedImages = document.querySelectorAll(
     "img:not([data-optimized])"
@@ -158,6 +180,19 @@ function optimizeScripts() {
 }
 
 function shouldSkipElement(element) {
+  // Skip check if element is null or not an Element
+  if (!element || !(element instanceof Element)) {
+    return false;
+  }
+
+  // Helper function to safely get class string
+  const getClassString = (el) => {
+    if (el.className instanceof SVGAnimatedString) {
+      return el.className.baseVal.toLowerCase();
+    }
+    return (typeof el.className === "string" ? el.className : "").toLowerCase();
+  };
+
   // Check element and its parents for modal/menu related attributes and classes
   const skipSelectors = [
     '[role="menu"]',
@@ -180,7 +215,8 @@ function shouldSkipElement(element) {
     return (
       element.matches(selector) ||
       element.closest(selector) ||
-      element.querySelector(selector)
+      // Check if any child elements match the selector
+      (element.querySelector && element.querySelector(selector))
     );
   });
 
@@ -194,131 +230,259 @@ function shouldSkipElement(element) {
     "dialog",
     "submenu",
     "navbar",
+    "navigation",
+    "drawer",
+    "sidebar",
+    "overlay",
+    "offcanvas",
   ];
-  const hasMenuClass = menuTerms.some((term) => {
-    const classString = element.className.toLowerCase();
-    const idString = element.id.toLowerCase();
-    const textContent = element.textContent?.toLowerCase() || "";
 
-    return (
-      classString.includes(term) ||
-      idString.includes(term) ||
-      (term === "menu" && textContent.includes(term))
-    );
-  });
+  // Check element and its parents
+  const checkElementAndParents = (el) => {
+    while (el && el instanceof Element) {
+      const classString = getClassString(el);
+      const idString = el.id.toLowerCase();
+      const textContent = el.textContent?.toLowerCase() || "";
 
-  // Check for common menu-related data attributes
-  const hasMenuDataAttr = Array.from(element.attributes).some((attr) => {
-    const name = attr.name.toLowerCase();
-    return (
-      name.includes("menu") ||
-      name.includes("nav") ||
-      name.includes("dropdown") ||
-      name.startsWith("data-toggle")
-    );
-  });
+      // Check for menu terms in class, id, or text
+      if (
+        menuTerms.some(
+          (term) =>
+            classString.includes(term) ||
+            idString.includes(term) ||
+            (term === "menu" && textContent.includes(term))
+        )
+      ) {
+        return true;
+      }
 
-  return hasSkipSelector || hasMenuClass || hasMenuDataAttr;
-}
+      // Check data attributes
+      if (
+        Array.from(el.attributes).some((attr) => {
+          const name = attr.name.toLowerCase();
+          return (
+            name.includes("menu") ||
+            name.includes("nav") ||
+            name.includes("dropdown") ||
+            name.includes("modal") ||
+            name.includes("dialog") ||
+            name.startsWith("data-toggle") ||
+            name.startsWith("aria-")
+          );
+        })
+      ) {
+        return true;
+      }
 
-function fixHiddenElements() {
-  const elements = document.querySelectorAll("*");
-  elements.forEach((element) => {
-    // Skip if element should be hidden
-    if (shouldSkipElement(element)) {
-      return;
+      el = el.parentElement;
     }
+    return false;
+  };
 
-    const style = window.getComputedStyle(element);
+  // Check children elements
+  const checkChildren = (el) => {
+    if (!el.querySelectorAll) return false;
 
-    // Check for various hiding techniques
-    if (
-      style.display === "none" ||
-      style.visibility === "hidden" ||
-      style.opacity === "0" ||
-      element.hasAttribute("hidden") ||
-      element.classList.contains("hidden") ||
-      element.classList.contains("invisible")
-    ) {
-      // Only modify if it's not a modal/menu/dropdown
-      const hasAnimationClass = Array.from(element.classList).some(
-        (cls) =>
-          cls.includes("fade") ||
-          cls.includes("animate") ||
-          cls.includes("transition") ||
-          cls.includes("show") ||
-          cls.includes("reveal")
+    const children = el.querySelectorAll("*");
+    return Array.from(children).some((child) => {
+      const classString = getClassString(child);
+      const idString = child.id.toLowerCase();
+
+      return menuTerms.some(
+        (term) => classString.includes(term) || idString.includes(term)
       );
+    });
+  };
 
-      if (hasAnimationClass && !shouldSkipElement(element)) {
-        element.style.setProperty(
-          "display",
-          element.style.display === "none" ? "block" : element.style.display,
-          "important"
+  return (
+    hasSkipSelector || checkElementAndParents(element) || checkChildren(element)
+  );
+}
+
+// Add performance-optimized DOM utilities
+const DOMUtils = {
+  // Batch DOM reads
+  readDOM(callback) {
+    return window.requestAnimationFrame(() => {
+      const measurements = callback();
+      return measurements;
+    });
+  },
+
+  // Batch DOM writes
+  writeDOM(callback) {
+    return window.requestAnimationFrame(() => {
+      callback();
+    });
+  },
+
+  // Create document fragment for batch insertions
+  createFragment() {
+    return document.createDocumentFragment();
+  },
+
+  // Efficiently query elements
+  querySelector(selector, context = document) {
+    return context.querySelector(selector);
+  },
+
+  querySelectorAll(selector, context = document) {
+    return Array.from(context.querySelectorAll(selector));
+  },
+
+  // Efficient class manipulation
+  addClass(element, className) {
+    element.classList.add(className);
+  },
+
+  removeClass(element, className) {
+    element.classList.remove(className);
+  },
+
+  // Efficient style manipulation
+  setStyles(element, styles) {
+    Object.assign(element.style, styles);
+  },
+};
+
+// Update fixHiddenElements to use performance optimizations
+function fixHiddenElements() {
+  DOMUtils.readDOM(() => {
+    const elements = DOMUtils.querySelectorAll("*");
+    const elementsToModify = [];
+
+    elements.forEach((element) => {
+      if (shouldSkipElement(element)) return;
+
+      const style = window.getComputedStyle(element);
+      const needsModification =
+        style.display === "none" ||
+        style.visibility === "hidden" ||
+        style.opacity === "0" ||
+        element.hasAttribute("hidden") ||
+        element.classList.contains("hidden") ||
+        element.classList.contains("invisible");
+
+      if (needsModification) {
+        const hasAnimationClass = Array.from(element.classList).some(
+          (cls) =>
+            cls.includes("fade") ||
+            cls.includes("animate") ||
+            cls.includes("transition") ||
+            cls.includes("show") ||
+            cls.includes("reveal")
         );
-        element.style.setProperty("visibility", "visible", "important");
-        element.style.setProperty("opacity", "1", "important");
-        element.removeAttribute("hidden");
+
+        if (hasAnimationClass && !shouldSkipElement(element)) {
+          elementsToModify.push({
+            element,
+            display:
+              element.style.display === "none"
+                ? "block"
+                : element.style.display,
+          });
+        }
       }
-    }
+    });
+
+    DOMUtils.writeDOM(() => {
+      elementsToModify.forEach(({ element, display }) => {
+        DOMUtils.setStyles(element, {
+          display,
+          visibility: "visible",
+          opacity: "1",
+        });
+        element.removeAttribute("hidden");
+      });
+    });
   });
 }
 
+// Update fixOpacityAnimations to use performance optimizations
 function fixOpacityAnimations() {
-  const elements = document.querySelectorAll("*");
-  elements.forEach((element) => {
-    // Skip if element should be hidden
-    if (shouldSkipElement(element)) {
-      return;
-    }
+  DOMUtils.readDOM(() => {
+    const elements = DOMUtils.querySelectorAll("*");
+    const modifications = [];
 
-    const style = window.getComputedStyle(element);
+    elements.forEach((element) => {
+      if (shouldSkipElement(element)) return;
 
-    // Check for transform animations that might hide content
-    if (
-      style.transform.includes("scale(0)") ||
-      style.transform.includes("translateY(-100%)") ||
-      style.transform.includes("translateX(-100%)")
-    ) {
-      if (!shouldSkipElement(element)) {
-        element.style.setProperty("transform", "none", "important");
+      const style = window.getComputedStyle(element);
+
+      // Batch all style reads
+      const needsTransformFix =
+        style.transform.includes("scale(0)") ||
+        style.transform.includes("translateY(-100%)") ||
+        style.transform.includes("translateX(-100%)");
+
+      const needsClipPathFix =
+        style.clipPath === "inset(100%)" || style.clipPath === "circle(0%)";
+
+      const needsOpacityFix =
+        style.opacity === "0" &&
+        (style.animation ||
+          style.transition ||
+          style.animationName ||
+          element.classList.toString().includes("animate") ||
+          element.classList.toString().includes("fade"));
+
+      // Queue modifications
+      if (needsTransformFix) {
+        modifications.push({
+          element,
+          type: "transform",
+        });
       }
-    }
 
-    // Check for clip-path animations
-    if (style.clipPath === "inset(100%)" || style.clipPath === "circle(0%)") {
-      if (!shouldSkipElement(element)) {
-        element.style.setProperty("clip-path", "none", "important");
+      if (needsClipPathFix) {
+        modifications.push({
+          element,
+          type: "clipPath",
+        });
       }
-    }
 
-    // Check if element has opacity: 0 and animation/transition
-    if (
-      style.opacity === "0" &&
-      (style.animation ||
-        style.transition ||
-        style.animationName ||
-        element.classList.toString().includes("animate") ||
-        element.classList.toString().includes("fade"))
-    ) {
-      if (!shouldSkipElement(element)) {
-        element.style.setProperty("opacity", "1", "important");
-        element.style.setProperty("visibility", "visible", "important");
-        element.style.removeProperty("animation");
-        element.style.removeProperty("transition");
+      if (needsOpacityFix) {
+        modifications.push({
+          element,
+          type: "opacity",
+        });
       }
-    }
+    });
+
+    // Batch all DOM writes
+    DOMUtils.writeDOM(() => {
+      modifications.forEach(({ element, type }) => {
+        switch (type) {
+          case "transform":
+            element.style.setProperty("transform", "none", "important");
+            break;
+          case "clipPath":
+            element.style.setProperty("clip-path", "none", "important");
+            break;
+          case "opacity":
+            DOMUtils.setStyles(element, {
+              opacity: "1",
+              visibility: "visible",
+            });
+            element.style.removeProperty("animation");
+            element.style.removeProperty("transition");
+            break;
+        }
+      });
+    });
   });
 }
 
 function optimizePage() {
+  if (!isExtensionEnabled) return;
+
   try {
     const observer = new MutationObserver((mutations) => {
-      try {
-        let hasNewImages = false;
-        let hasNewElements = false;
-        let hasClassChanges = false;
+      let hasNewImages = false;
+      let hasNewElements = false;
+      let hasClassChanges = false;
 
+      DOMUtils.readDOM(() => {
         mutations.forEach((mutation) => {
           if (
             mutation.type === "attributes" &&
@@ -341,16 +505,22 @@ function optimizePage() {
             }
           });
         });
+      });
 
-        if (hasNewImages) {
-          optimizeImages();
-        }
-        if (hasNewElements || hasClassChanges) {
-          fixOpacityAnimations();
-          fixHiddenElements();
-        }
-      } catch (error) {
-        // Silent fail for mutation processing
+      // Batch optimizations
+      if (hasNewImages || hasNewElements || hasClassChanges) {
+        requestIdleCallback(
+          () => {
+            DOMUtils.writeDOM(() => {
+              if (hasNewImages) optimizeImages();
+              if (hasNewElements || hasClassChanges) {
+                fixOpacityAnimations();
+                fixHiddenElements();
+              }
+            });
+          },
+          { timeout: 1000 }
+        );
       }
     });
 
@@ -363,19 +533,17 @@ function optimizePage() {
       characterData: false,
     });
 
-    // Initial optimizations with error handling
+    // Initial optimizations
     requestIdleCallback(
       () => {
-        try {
+        DOMUtils.writeDOM(() => {
           optimizeImages();
           optimizeScripts();
           optimizeResourceHints();
           optimizeViewportRendering();
           fixOpacityAnimations();
           fixHiddenElements();
-        } catch (error) {
-          // Silent fail for initial optimizations
-        }
+        });
       },
       { timeout: 2000 }
     );
@@ -529,8 +697,6 @@ function optimizeViewportRendering() {
     }, observerOptions);
 
     window.intersectionObserver = observer;
-
-    // Rest of the function...
   } catch {}
 }
 
