@@ -1,88 +1,95 @@
 document.addEventListener("DOMContentLoaded", async () => {
-  const { config } = await chrome.storage.local.get("config");
-  const { enabled = true } = await chrome.storage.local.get("enabled");
-
-  // Create settings UI
-  const settingsHTML = Object.entries(config)
-    .map(
-      ([key, value]) => `
-    <div class="setting">
-      <div>
-        <div class="setting-label">${formatSettingLabel(key)}</div>
-        <div class="setting-description">${getSettingDescription(key)}</div>
-      </div>
-      <label class="switch">
-        <input type="checkbox" id="${key}" ${value ? "checked" : ""} ${
-        !enabled ? "disabled" : ""
-      }>
-        <span class="slider"></span>
-      </label>
-    </div>
-  `
-    )
-    .join("");
-
-  document.getElementById("settings").innerHTML = settingsHTML;
-
-  // Set up master toggle with proper initial state
+  const api = globalThis.browser || globalThis.chrome;
+  const { DEFAULT_CONFIG, normalizeSettings } = globalThis.OptimizerSettings;
   const masterToggle = document.getElementById("masterToggle");
   const settingsContainer = document.getElementById("settings");
+  const status = document.getElementById("status");
+  let queue = Promise.resolve();
+  let pending = 0;
+  let storageRevision = 0;
+  let initialized = false;
+  let state = normalizeSettings();
+  settingsContainer.innerHTML = Object.keys(DEFAULT_CONFIG).map((key) => `
+    <div class="setting">
+      <div><div class="setting-label">${formatSettingLabel(key)}</div>
+      <div class="setting-description">${getSettingDescription(key)}</div></div>
+      <label class="switch"><input type="checkbox" id="${key}" aria-label="${formatSettingLabel(key)}">
+      <span class="slider"></span></label>
+    </div>`).join("");
 
-  masterToggle.checked = enabled;
-  settingsContainer.classList.toggle("disabled", !enabled);
-
-  // Handle master toggle changes with error handling
-  masterToggle.addEventListener("change", async (e) => {
-    try {
-      const isEnabled = e.target.checked;
-      await chrome.storage.local.set({ enabled: isEnabled });
-      settingsContainer.classList.toggle("disabled", !isEnabled);
-
-      // Update all toggles' disabled state
-      document
-        .querySelectorAll('input[type="checkbox"]:not(#masterToggle)')
-        .forEach((input) => {
-          input.disabled = !isEnabled;
-        });
-
-      // Notify content script
-      const [tab] = await chrome.tabs.query({
-        active: true,
-        currentWindow: true,
-      });
-      if (tab?.id) {
-        chrome.tabs
-          .sendMessage(tab.id, {
-            type: "EXTENSION_ENABLED_CHANGED",
-            enabled: isEnabled,
-          })
-          .catch(() => {
-            // Handle error silently - content script might not be ready
-          });
-      }
-    } catch (error) {
-      console.error("Error updating extension state:", error);
-      // Revert UI state on error
-      e.target.checked = !e.target.checked;
+  function render() {
+    masterToggle.checked = state.enabled;
+    settingsContainer.classList.toggle("disabled", !state.enabled);
+    for (const key of Object.keys(DEFAULT_CONFIG)) {
+      const input = document.getElementById(key);
+      input.checked = state.config[key];
+      input.disabled = !state.enabled;
     }
+  }
+  async function readSettings() {
+    // An event received during a pending read invalidates its snapshot.
+    let before;
+    let snapshot;
+    do {
+      before = storageRevision;
+      snapshot = await api.storage.local.get(["enabled", "config"]);
+    } while (before !== storageRevision);
+    return normalizeSettings(snapshot);
+  }
+  api.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || (!changes.enabled && !changes.config)) return;
+    storageRevision++;
+    if (!initialized || pending) return;
+    if (changes.enabled) state.enabled = normalizeSettings({ enabled: changes.enabled.newValue }).enabled;
+    if (changes.config) state.config = normalizeSettings({ config: changes.config.newValue }).config;
+    render();
   });
+  masterToggle.disabled = true;
+  try {
+    state = await readSettings();
+    initialized = true;
+    masterToggle.disabled = false;
+  } catch (error) {
+    status.textContent = "Could not load settings. Close and reopen to retry.";
+    render();
+    for (const key of Object.keys(DEFAULT_CONFIG)) document.getElementById(key).disabled = true;
+    return;
+  }
+  render();
 
-  // Handle individual setting changes with error handling
-  document
-    .querySelectorAll('input[type="checkbox"]:not(#masterToggle)')
-    .forEach((input) => {
-      input.addEventListener("change", async (e) => {
+  // Serialize read/merge/write operations so rapid changes in this popup cannot
+  // overwrite each other. Read fresh state for every operation, not the UI cache.
+  function update(key, value) {
+    pending++;
+    queue = queue.then(async () => {
+      try {
+        const fresh = normalizeSettings(await api.storage.local.get(["enabled", "config"]));
+        const patch = key === "enabled" ? { enabled: value }
+          : { config: { ...fresh.config, [key]: value } };
+        await api.storage.local.set(patch);
+        state = await readSettings();
+        status.textContent = "";
+      } catch (error) {
+        status.textContent = "Could not save settings. Please try again.";
         try {
-          const { config } = await chrome.storage.local.get("config");
-          config[e.target.id] = e.target.checked;
-          await chrome.storage.local.set({ config });
-        } catch (error) {
-          console.error("Error updating setting:", error);
-          // Revert UI state on error
-          e.target.checked = !e.target.checked;
-        }
-      });
+          state = await readSettings();
+        } catch (_) { /* Keep the last confirmed state if storage is unavailable. */ }
+      } finally {
+        pending--;
+        if (!pending) render();
+      }
     });
+  }
+  masterToggle.addEventListener("change", (event) => {
+    // Apply disabled styling immediately, while persistence stays serialized.
+    const enabled = event.target.checked;
+    settingsContainer.classList.toggle("disabled", !enabled);
+    for (const key of Object.keys(DEFAULT_CONFIG)) document.getElementById(key).disabled = !enabled;
+    update("enabled", enabled);
+  });
+  for (const key of Object.keys(DEFAULT_CONFIG)) {
+    document.getElementById(key).addEventListener("change", (event) => update(key, event.target.checked));
+  }
 });
 
 function formatSettingLabel(key) {

@@ -4,15 +4,12 @@
   "version": "1.0",
   "description": "Optimizes web pages before they load",
   "permissions": [
-    "webRequest",
-    "declarativeNetRequest",
     "storage",
-    "scripting",
-    "webNavigation",
-    "activeTab",
-    "tabs"
+    "declarativeNetRequest"
   ],
-  "host_permissions": ["<all_urls>"],
+  "host_permissions": [
+    "<all_urls>"
+  ],
   "background": {
     "service_worker": "background.js"
   },
@@ -21,19 +18,15 @@
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["contentScript.js"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "settings.js",
+        "contentScript.js"
+      ],
       "run_at": "document_start",
       "all_frames": true
     }
-  ],
-  "declarative_net_request": {
-    "rule_resources": [
-      {
-        "id": "ruleset_1",
-        "enabled": true,
-        "path": "rules.json"
-      }
-    ]
-  }
+  ]
 }
